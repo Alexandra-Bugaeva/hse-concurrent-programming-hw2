@@ -51,13 +51,13 @@ class ConnectionPoolSmokeTest {
         PooledConnection connection = pool.borrow(SHORT);
 
         assertEquals(1, factory.created.size());
-        assertSame(factory.created.get(0), connection.raw());
+        assertSame(factory.created.getFirst(), connection.raw());
         assertEquals(new PoolStats(1, 0, 1, 0, 0), pool.stats());
 
         connection.close();
 
         assertEquals(new PoolStats(1, 1, 0, 0, 0), pool.stats());
-        assertFalse(factory.created.get(0).closed);
+        assertFalse(factory.created.getFirst().closed);
     }
 
     @Test
@@ -138,7 +138,7 @@ class ConnectionPoolSmokeTest {
 
         pool.shutdown(Duration.ZERO);
 
-        assertTrue(factory.created.get(0).closed);
+        assertTrue(factory.created.getFirst().closed);
         assertThrows(IllegalStateException.class, () -> pool.borrow(SHORT));
         assertThrows(IllegalStateException.class, () -> pool.resize(3));
         assertDoesNotThrow(pool::stats);
@@ -151,7 +151,7 @@ class ConnectionPoolSmokeTest {
 
         pool.shutdown(Duration.ofMillis(200));
 
-        assertTrue(factory.created.get(0).closed);
+        assertTrue(factory.created.getFirst().closed);
         assertThrows(IllegalStateException.class, connection::raw);
         assertDoesNotThrow(connection::close);
     }

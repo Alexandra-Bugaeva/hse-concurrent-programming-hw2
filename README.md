@@ -35,27 +35,28 @@
 
 Тест `PoolStarvationTest.maxSizeEqualToThreadCountStarves` использует `T = 4`: каждый поток получает первое соединение,
 после барьера просит второе и ждёт до минуты. При `maxSize = T` все соединения выданы, `waiting = T`, а задачи остаются
-незавершёнными. Пока потоки заблокированы, тест запускает `jps -l`, находит PID процесса теста и вызывает
-`jcmd <pid> Thread.print`. Ниже приведён фрагмент вывода этого запуска, PID и служебные идентификаторы
-меняются между запусками
+незавершёнными. Тест печатает PID и оставляет потоки в этом состоянии на 10 секунд. Во время этого окна командой
+`jps -l` находится Gradle test-worker, затем для него выполняется `jcmd <pid> Thread.print`. Ниже приведён реальный
+фрагмент вывода такого запуска; PID и служебные идентификаторы меняются между запусками.
 
 ```text
 jps -l process:
-22544 worker.org.gradle.process.internal.worker.GradleWorkerMain
-Actual jcmd 22544 Thread.print output:
-"pool-2-thread-1" #35 prio=5 os_prio=0 cpu=0.00ms elapsed=0.40s tid=0x00000261ff333a30 nid=0x22f8 waiting on condition  [0x00000066722ff000]
+24632 worker.org.gradle.process.internal.worker.GradleWorkerMain
+Actual jcmd 24632 Thread.print output:
+"pool-1-thread-1" #41 [26368] prio=5 os_prio=0 cpu=0.00ms elapsed=0.09s tid=0x0000020484900f10 nid=26368 waiting on condition  [0x000000aebe2fe000]
    java.lang.Thread.State: TIMED_WAITING (parking)
-	at jdk.internal.misc.Unsafe.park(java.base@17.0.16/Native Method)
-	- parking to wait for  <0x00000000ee262158> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
-	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@17.0.16/LockSupport.java:252)
-	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(java.base@17.0.16/AbstractQueuedSynchronizer.java:1679)
+	at jdk.internal.misc.Unsafe.park(java.base@25.0.2/Native Method)
+	- parking to wait for  <0x00000000ef409e48> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@25.0.2/LockSupport.java:271)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(java.base@25.0.2/AbstractQueuedSynchronizer.java:1803)
 	at edu.hse.concurrency.pool.ConnectionPoolImpl.borrow(ConnectionPoolImpl.java:114)
-	at edu.hse.concurrency.pool.PoolStarvationTest.lambda$maxSizeEqualToThreadCountStarves$2(PoolStarvationTest.java:39)
-	at edu.hse.concurrency.pool.PoolStarvationTest$$Lambda$631/0x0000026190197cf0.call(Unknown Source)
-	at java.util.concurrent.FutureTask.run(java.base@17.0.16/FutureTask.java:264)
-	at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.16/ThreadPoolExecutor.java:1136)
-	at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.16/ThreadPoolExecutor.java:635)
-	at java.lang.Thread.run(java.base@17.0.16/Thread.java:840)
+	at edu.hse.concurrency.pool.PoolStarvationTest.lambda$maxSizeEqualToThreadCountStarves$2(PoolStarvationTest.java:37)
+	at edu.hse.concurrency.pool.PoolStarvationTest$$Lambda/0x000000008b188458.call(Unknown Source)
+	at java.util.concurrent.FutureTask.run(java.base@25.0.2/FutureTask.java:328)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@25.0.2/ThreadPoolExecutor.java:1090)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@25.0.2/ThreadPoolExecutor.java:614)
+	at java.lang.Thread.runWith(java.base@25.0.2/Thread.java:1487)
+	at java.lang.Thread.run(java.base@25.0.2/Thread.java:1474)
 ```
 
 Остальные три потока ожидают там же. Каждый продолжает удерживать первое соединение, пока ждёт второе; свободных
@@ -238,8 +239,8 @@ Actual jcmd 22544 Thread.print output:
 
 В тестах можно всё.
 
-**Окружение.** Сборка рассчитана на JDK 17: версия закреплена через Gradle toolchain (`build.gradle.kts`). В smoke-тесте
-используются records, доступные начиная с Java 16.
+**Окружение.** Сборка рассчитана на JDK 25: версия закреплена через Gradle toolchain (`build.gradle.kts`). Нужен
+установленный JDK 25 (smoke-тест использует `List.getFirst()` и records).
 
 ## 4. Зависание по вине приложения
 
