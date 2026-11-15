@@ -1,5 +1,75 @@
 # Задание 2. Пул соединений
 
+## Описание реализации
+
+### Замки и условия
+
+Один `ReentrantLock` защищает список свободных соединений `idle`, множество выданных `borrowed`, счётчик создаваемых
+соединений `creating`, очередь ожидающих, текущий `maxSize` и флаг остановки. `stats()` читает все счётчики под этим
+замком
+
+У каждого ожидающего в `borrow` своя `Condition`. Возврат соединения, освобождение места и неудачное создание будят
+голову очереди, при `fair = true` ресурс может взять только она. `shutdown` будит всех ожидающих, `changed` будит
+`shutdown`, когда меняется число выданных соединений, `reaperChanged` будит фоновый поток при изменении свободных
+соединений или при остановке пула, поток ждёт до ближайшего срока `idleTimeout`, проверяя состояние не реже раза в
+500 мс
+
+### Учёт при создании и закрытии
+
+Перед вызовом фабрики пул под замком увеличивает `creating`, резервируя место. После возврата фабрики он под замком
+переводит это место в `borrowed` либо уменьшает `creating`, если пул успели остановить, поэтому медленное создание
+не позволяет превысить `maxSize` и не блокирует другие операции пула
+
+При возврате, вытеснении или остановке запись сначала меняет состояние учёта под замком; `RawConnection.close()` затем
+вызывается без замка. Для возврата переход из `borrowed` в `idle` сохраняет `total`, при физическом закрытии запись
+сначала исключается из учёта, поэтому `total` уменьшается ровно один раз. Медленное закрытие не блокирует `borrow`,
+`stats` или другие возвраты
+
+### Взаимоблокировки
+
+Пул использует один внутренний замок и не вызывает внешнюю фабрику или `RawConnection.close()` под ним. Ожидание на
+`Condition` отпускает этот замок, поэтому другой поток может изменить состояние и разбудить ожидающего, пул не захватывает
+замки владельца соединения, следовательно, внутри пула нет цикла ожидания нескольких замков.
+
+### Зависание приложения
+
+Тест `PoolStarvationTest.maxSizeEqualToThreadCountStarves` использует `T = 4`: каждый поток получает первое соединение,
+после барьера просит второе и ждёт до минуты. При `maxSize = T` все соединения выданы, `waiting = T`, а задачи остаются
+незавершёнными. Пока потоки заблокированы, тест запускает `jps -l`, находит PID процесса теста и вызывает
+`jcmd <pid> Thread.print`. Ниже приведён фрагмент вывода этого запуска, PID и служебные идентификаторы
+меняются между запусками
+
+```text
+jps -l process:
+22544 worker.org.gradle.process.internal.worker.GradleWorkerMain
+Actual jcmd 22544 Thread.print output:
+"pool-2-thread-1" #35 prio=5 os_prio=0 cpu=0.00ms elapsed=0.40s tid=0x00000261ff333a30 nid=0x22f8 waiting on condition  [0x00000066722ff000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.16/Native Method)
+	- parking to wait for  <0x00000000ee262158> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@17.0.16/LockSupport.java:252)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(java.base@17.0.16/AbstractQueuedSynchronizer.java:1679)
+	at edu.hse.concurrency.pool.ConnectionPoolImpl.borrow(ConnectionPoolImpl.java:114)
+	at edu.hse.concurrency.pool.PoolStarvationTest.lambda$maxSizeEqualToThreadCountStarves$2(PoolStarvationTest.java:39)
+	at edu.hse.concurrency.pool.PoolStarvationTest$$Lambda$631/0x0000026190197cf0.call(Unknown Source)
+	at java.util.concurrent.FutureTask.run(java.base@17.0.16/FutureTask.java:264)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.16/ThreadPoolExecutor.java:1136)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.16/ThreadPoolExecutor.java:635)
+	at java.lang.Thread.run(java.base@17.0.16/Thread.java:840)
+```
+
+Остальные три потока ожидают там же. Каждый продолжает удерживать первое соединение, пока ждёт второе; свободных
+соединений и места в пуле нет. JVM не пишет `Found one Java-level deadlock`, потому что потоки ждут условие пула, а не
+циклически захваченные мониторы.
+
+Минимальный размер пула, при котором такое зависание невозможно для `T` потоков с потребностью в `C` соединениях
+каждый, равен `T(C - 1) + 1`. При размере не больше `T(C - 1)` можно выдать каждому потоку по `C - 1` соединений;
+все потоки будут ждать последнее и не вернут уже выданные, поэтому меньшего размера недостаточно. При размере
+`T(C - 1) + 1` даже если все остальные потоки удерживают по `C - 1` соединений, одно остаётся доступным. Хотя бы
+один поток получает свои `C` соединений, заканчивает работу и возвращает их. Повторяя это, завершаются остальные
+потоки. `PoolStarvationTest.minimumCapacityLetsAllThreadsFinish` проверяет случай `T = 4`, `C = 2`, размер пула `5`.
+
+
 Дедлайн – 15 ноября 23:59. 10 баллов.
 
 ## 1. Задача
@@ -221,71 +291,3 @@
 3. почему внутри пула невозможна взаимоблокировка;
 4. раздел 4: фрагмент дампа с пояснением, формула и её доказательство.
 
-## Описание реализации
-
-### Замки и условия
-
-Один `ReentrantLock` защищает список свободных соединений `idle`, множество выданных `borrowed`, счётчик создаваемых
-соединений `creating`, очередь ожидающих, текущий `maxSize` и флаг остановки. `stats()` читает все счётчики под этим
-замком
-
-У каждого ожидающего в `borrow` своя `Condition`. Возврат соединения, освобождение места и неудачное создание будят
-голову очереди, при `fair = true` ресурс может взять только она. `shutdown` будит всех ожидающих, `changed` будит
-`shutdown`, когда меняется число выданных соединений, `reaperChanged` будит фоновый поток при изменении свободных
-соединений или при остановке пула, поток ждёт до ближайшего срока `idleTimeout`, проверяя состояние не реже раза в
-500 мс
-
-### Учёт при создании и закрытии
-
-Перед вызовом фабрики пул под замком увеличивает `creating`, резервируя место. После возврата фабрики он под замком
-переводит это место в `borrowed` либо уменьшает `creating`, если пул успели остановить, поэтому медленное создание
-не позволяет превысить `maxSize` и не блокирует другие операции пула
-
-При возврате, вытеснении или остановке запись сначала меняет состояние учёта под замком; `RawConnection.close()` затем
-вызывается без замка. Для возврата переход из `borrowed` в `idle` сохраняет `total`, при физическом закрытии запись
-сначала исключается из учёта, поэтому `total` уменьшается ровно один раз. Медленное закрытие не блокирует `borrow`,
-`stats` или другие возвраты
-
-### Взаимоблокировки
-
-Пул использует один внутренний замок и не вызывает внешнюю фабрику или `RawConnection.close()` под ним. Ожидание на
-`Condition` отпускает этот замок, поэтому другой поток может изменить состояние и разбудить ожидающего, пул не захватывает
-замки владельца соединения, следовательно, внутри пула нет цикла ожидания нескольких замков.
-
-### Зависание приложения
-
-Тест `PoolStarvationTest.maxSizeEqualToThreadCountStarves` использует `T = 4`: каждый поток получает первое соединение,
-после барьера просит второе и ждёт до минуты. При `maxSize = T` все соединения выданы, `waiting = T`, а задачи остаются
-незавершёнными. Пока потоки заблокированы, тест запускает `jps -l`, находит PID процесса теста и вызывает
-`jcmd <pid> Thread.print`. Ниже приведён фрагмент вывода этого запуска, PID и служебные идентификаторы
-меняются между запусками
-
-```text
-jps -l process:
-22544 worker.org.gradle.process.internal.worker.GradleWorkerMain
-Actual jcmd 22544 Thread.print output:
-"pool-2-thread-1" #35 prio=5 os_prio=0 cpu=0.00ms elapsed=0.40s tid=0x00000261ff333a30 nid=0x22f8 waiting on condition  [0x00000066722ff000]
-   java.lang.Thread.State: TIMED_WAITING (parking)
-	at jdk.internal.misc.Unsafe.park(java.base@17.0.16/Native Method)
-	- parking to wait for  <0x00000000ee262158> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
-	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@17.0.16/LockSupport.java:252)
-	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(java.base@17.0.16/AbstractQueuedSynchronizer.java:1679)
-	at edu.hse.concurrency.pool.ConnectionPoolImpl.borrow(ConnectionPoolImpl.java:114)
-	at edu.hse.concurrency.pool.PoolStarvationTest.lambda$maxSizeEqualToThreadCountStarves$2(PoolStarvationTest.java:39)
-	at edu.hse.concurrency.pool.PoolStarvationTest$$Lambda$631/0x0000026190197cf0.call(Unknown Source)
-	at java.util.concurrent.FutureTask.run(java.base@17.0.16/FutureTask.java:264)
-	at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.16/ThreadPoolExecutor.java:1136)
-	at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.16/ThreadPoolExecutor.java:635)
-	at java.lang.Thread.run(java.base@17.0.16/Thread.java:840)
-```
-
-Остальные три потока ожидают там же. Каждый продолжает удерживать первое соединение, пока ждёт второе; свободных
-соединений и места в пуле нет. JVM не пишет `Found one Java-level deadlock`, потому что потоки ждут условие пула, а не
-циклически захваченные мониторы.
-
-Минимальный размер пула, при котором такое зависание невозможно для `T` потоков с потребностью в `C` соединениях
-каждый, равен `T(C - 1) + 1`. При размере не больше `T(C - 1)` можно выдать каждому потоку по `C - 1` соединений;
-все потоки будут ждать последнее и не вернут уже выданные, поэтому меньшего размера недостаточно. При размере
-`T(C - 1) + 1` даже если все остальные потоки удерживают по `C - 1` соединений, одно остаётся доступным. Хотя бы
-один поток получает свои `C` соединений, заканчивает работу и возвращает их. Повторяя это, завершаются остальные
-потоки. `PoolStarvationTest.minimumCapacityLetsAllThreadsFinish` проверяет случай `T = 4`, `C = 2`, размер пула `5`.
